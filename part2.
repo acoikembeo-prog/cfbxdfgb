@@ -1,0 +1,383 @@
+using System.Collections;
+using UnityEngine;
+
+namespace GTAOpenWorld.Part2.Combat
+{
+    [System.Serializable]
+    public class WeaponData
+    {
+        public string weaponName = "Pistol";
+        public enum FireMode { SemiAuto, FullAuto, Burst }
+        public FireMode fireMode = FireMode.SemiAuto;
+
+        [Header("Stats")]
+        public float damage = 25f;
+        public float fireRate = 0.15f;
+        public float range = 100f;
+        public int clipSize = 12;
+        public int currentClipAmmo = 12;
+        public int reserveAmmo = 60;
+        public float reloadTime = 1.8f;
+
+        [Header("Recoil & Accuracy")]
+        public float recoilPitch = 2.0f; // Giật nòng súng lên trên
+        public float recoilYaw = 0.5f;   // Giật nòng súng sang ngang
+        public float adsFOV = 40f;
+    }
+
+    public class WeaponController : MonoBehaviour
+    {
+        public WeaponData currentWeapon;
+        public Transform muzzleTransform;
+        public ParticleSystem muzzleFlash;
+        public AudioSource audioSource;
+        public AudioClip shootSound;
+        public AudioClip reloadSound;
+        public Camera fpsCamera;
+
+        [Header("ADS & Sway")]
+        public Vector3 hipPosition = new Vector3(0.2f, -0.25f, 0.4f);
+        public Vector3 adsPosition = new Vector3(0f, -0.15f, 0.25f);
+        public float adsSpeed = 10f;
+
+        private float nextTimeToFire = 0f;
+        private bool isReloading = false;
+        private bool isAiming = false;
+
+        private void Update()
+        {
+            if (isReloading) return;
+
+            // Xử lý ngắm súng (ADS)
+            isAiming = Input.GetMouseButton(1);
+            float targetFOV = isAiming ? currentWeapon.adsFOV : 60f;
+            fpsCamera.fieldOfView = Mathf.Lerp(fpsCamera.fieldOfView, targetFOV, Time.deltaTime * adsSpeed);
+            transform.localPosition = Vector3.Lerp(transform.localPosition, isAiming ? adsPosition : hipPosition, Time.deltaTime * adsSpeed);
+
+            // Xử lý Bắn súng
+            if (currentWeapon.fireMode == WeaponData.FireMode.FullAuto)
+            {
+                if (Input.GetMouseButton(0) && Time.time >= nextTimeToFire) Shoot();
+            }
+            else
+            {
+                if (Input.GetMouseButtonDown(0) && Time.time >= nextTimeToFire) Shoot();
+            }
+
+            // Nạp đạn
+            if (Input.GetKeyDown(KeyCode.R) || (currentWeapon.currentClipAmmo <= 0 && currentWeapon.reserveAmmo > 0))
+            {
+                StartCoroutine(ReloadRoutine());
+            }
+        }
+
+        private void Shoot()
+        {
+            if (currentWeapon.currentClipAmmo <= 0)
+            {
+                StartCoroutine(ReloadRoutine());
+                return;
+            }
+
+            nextTimeToFire = Time.time + currentWeapon.fireRate;
+            currentWeapon.currentClipAmmo--;
+
+            // Hiệu ứng âm thanh & hình ảnh
+            if (muzzleFlash) muzzleFlash.Play();
+            if (audioSource && shootSound) audioSource.PlayOneShot(shootSound);
+
+            // Giật súng Procedural (Recoil)
+            ApplyRecoil();
+
+            // Tính toán Raycast va chạm đạn
+            if (Physics.Raycast(fpsCamera.transform.position, fpsCamera.transform.forward, out RaycastHit hit, currentWeapon.range))
+            {
+                // Gây sát thương nếu trúng kẻ địch / Cảnh sát / NPC
+                IDamageable target = hit.transform.GetComponent<IDamageable>();
+                if (target != null)
+                {
+                    target.TakeDamage(currentWeapon.damage, hit.point);
+                }
+            }
+        }
+
+        private void ApplyRecoil()
+        {
+            float pitch = Random.Range(currentWeapon.recoilPitch * 0.8f, currentWeapon.recoilPitch);
+            float yaw = Random.Range(-currentWeapon.recoilYaw, currentWeapon.recoilYaw);
+
+            fpsCamera.transform.localRotation *= Quaternion.Euler(-pitch, yaw, 0f);
+        }
+
+        private IEnumerator ReloadRoutine()
+        {
+            if (currentWeapon.reserveAmmo <= 0 || currentWeapon.currentClipAmmo == currentWeapon.clipSize) yield break;
+
+            isReloading = true;
+            if (audioSource && reloadSound) audioSource.PlayOneShot(reloadSound);
+
+            yield return new WaitForSeconds(currentWeapon.reloadTime);
+
+            int neededAmmo = currentWeapon.clipSize - currentWeapon.currentClipAmmo;
+            int ammoToDeduct = Mathf.Min(neededAmmo, currentWeapon.reserveAmmo);
+
+            currentWeapon.currentClipAmmo += ammoToDeduct;
+            currentWeapon.reserveAmmo -= ammoToDeduct;
+            isReloading = false;
+        }
+    }
+
+    public interface IDamageable
+    {
+        void TakeDamage(float amount, Vector3 hitPoint);
+    }
+}
+using UnityEngine;
+using UnityEngine.UI;
+
+namespace GTAOpenWorld.Part2.Combat
+{
+    public class WeaponWheelManager : MonoBehaviour
+    {
+        public GameObject weaponWheelCanvas;
+        public Image highlightSectorImage;
+        public bool isWheelOpen = false;
+
+        private void Update()
+        {
+            // Mữ Tab để mở Weapon Wheel
+            if (Input.GetKeyDown(KeyCode.Tab))
+            {
+                OpenWeaponWheel();
+            }
+            else if (Input.GetKeyUp(KeyCode.Tab))
+            {
+                CloseWeaponWheel();
+            }
+
+            if (isWheelOpen)
+            {
+                HandleWheelSelection();
+            }
+        }
+
+        private void OpenWeaponWheel()
+        {
+            isWheelOpen = true;
+            weaponWheelCanvas.SetActive(true);
+            Time.timeScale = 0.15f; // Làm chậm thời gian (Slow-motion)
+            Cursor.lockState = CursorLockMode.None;
+            Cursor.visible = true;
+        }
+
+        private void CloseWeaponWheel()
+        {
+            isWheelOpen = false;
+            weaponWheelCanvas.SetActive(false);
+            Time.timeScale = 1.0f; // Trở lại tốc độ bình thường
+            Cursor.lockState = CursorLockMode.Locked;
+            Cursor.visible = false;
+        }
+
+        private void HandleWheelSelection()
+        {
+            Vector2 mousePosition = new Vector2(Input.mousePosition.x - Screen.width / 2f, Input.mousePosition.y - Screen.height / 2f);
+            float angle = Mathf.Atan2(mousePosition.y, mousePosition.x) * Mathf.Rad2Deg;
+            if (angle < 0) angle += 360f;
+
+            // Tính toán góc để chọn slot súng tương ứng
+            if (highlightSectorImage)
+            {
+                highlightSectorImage.rectTransform.rotation = Quaternion.Euler(0, 0, angle);
+            }
+        }
+    }
+}
+using UnityEngine;
+using UnityEngine.AI;
+
+namespace GTAOpenWorld.Part2.Police
+{
+    public enum PoliceState { Patrol, Alert, Pursuit, TakeCover, Search }
+
+    [RequireComponent(typeof(NavMeshAgent))]
+    public class PoliceAIStateMachine : MonoBehaviour, Combat.IDamageable
+    {
+        public PoliceState currentState = PoliceState.Patrol;
+        public float health = 100f;
+
+        [Header("Detection & Combat")]
+        public Transform targetPlayer;
+        public float sightRange = 30f;
+        public float shootingRange = 15f;
+        public float fireRate = 0.5f;
+        public float damagePerShot = 10f;
+
+        private NavMeshAgent agent;
+        private float nextShotTime = 0f;
+        private Vector3 lastKnownPlayerPos;
+
+        private void Start()
+        {
+            agent = GetComponent<NavMeshAgent>();
+        }
+
+        private void Update()
+        {
+            float distanceToPlayer = Vector3.Distance(transform.position, targetPlayer.position);
+
+            switch (currentState)
+            {
+                case PoliceState.Patrol:
+                    if (distanceToPlayer <= sightRange && WantedSystem.Instance.wantedStars > 0)
+                    {
+                        currentState = PoliceState.Pursuit;
+                    }
+                    break;
+
+                case PoliceState.Pursuit:
+                    agent.SetDestination(targetPlayer.position);
+                    lastKnownPlayerPos = targetPlayer.position;
+
+                    if (distanceToPlayer <= shootingRange)
+                    {
+                        currentState = PoliceState.TakeCover;
+                    }
+                    else if (distanceToPlayer > sightRange * 1.5f)
+                    {
+                        currentState = PoliceState.Search;
+                    }
+                    break;
+
+                case PoliceState.TakeCover:
+                    agent.isStopped = true;
+                    transform.LookAt(targetPlayer.position);
+
+                    if (Time.time >= nextShotTime)
+                    {
+                        ShootAtPlayer();
+                        nextShotTime = Time.time + fireRate;
+                    }
+
+                    if (distanceToPlayer > shootingRange + 5f)
+                    {
+                        agent.isStopped = false;
+                        currentState = PoliceState.Pursuit;
+                    }
+                    break;
+
+                case PoliceState.Search:
+                    agent.SetDestination(lastKnownPlayerPos);
+                    if (agent.remainingDistance < 1.0f)
+                    {
+                        // Sau khi tìm không thấy sẽ quay lại Patrol
+                        currentState = PoliceState.Patrol;
+                    }
+                    break;
+            }
+        }
+
+        private void ShootAtPlayer()
+        {
+            Debug.Log("Police is shooting at Player!");
+            // Gọi sát thương lên Player
+        }
+
+        public void TakeDamage(float amount, Vector3 hitPoint)
+        {
+            health -= amount;
+            // Tăng truy nã khi bắn cảnh sát
+            WantedSystem.Instance.AddHeat(20f);
+
+            if (health <= 0)
+            {
+                Die();
+            }
+        }
+
+        private void Die()
+        {
+            Destroy(gameObject);
+        }
+    }
+
+    // Singleton Quản lý Mức độ Truy nã (1-5 Sao)
+    public class WantedSystem : MonoBehaviour
+    {
+        public static WantedSystem Instance;
+        public int wantedStars = 0;
+        public float currentHeat = 0f;
+
+        private void Awake()
+        {
+            if (Instance == null) Instance = this;
+        }
+
+        public void AddHeat(float amount)
+        {
+            currentHeat += amount;
+            UpdateStars();
+        }
+
+        private void UpdateStars()
+        {
+            if (currentHeat > 100f) wantedStars = 5; // Trực thăng + Đặc nhiệm SWAT
+            else if (currentHeat > 75f) wantedStars = 4;
+            else if (currentHeat > 50f) wantedStars = 3; // Xe cảnh sát truy đuổi gắt
+            else if (currentHeat > 25f) wantedStars = 2;
+            else if (currentHeat > 5f) wantedStars = 1; // Tuần tra theo dõi
+            else wantedStars = 0;
+        }
+    }
+}
+using UnityEngine;
+using UnityEngine.UI;
+
+namespace GTAOpenWorld.Part2.UI
+{
+    public class CombatHUDController : MonoBehaviour
+    {
+        [Header("Health & Armor UI")]
+        public Image healthBarFill;
+        public Image armorBarFill;
+
+        [Header("Ammo & Weapon UI")]
+        public Text ammoText; // Dạng: "30 / 120"
+        public Text weaponNameText;
+
+        [Header("Wanted System UI")]
+        public GameObject[] starIcons; // 5 hình ngôi sao
+
+        [Header("Crosshair")]
+        public RectTransform crosshairUI;
+
+        public void UpdateHUD(float currentHealth, float maxHealth, float currentArmor, float maxArmor, int clipAmmo, int reserveAmmo, string weaponName, int wantedStars)
+        {
+            // 1. Cập nhật Máu & Giáp
+            if (healthBarFill) healthBarFill.fillAmount = currentHealth / maxHealth;
+            if (armorBarFill) armorBarFill.fillAmount = currentArmor / maxArmor;
+
+            // 2. Cập nhật Số đạn & Tên súng
+            if (ammoText) ammoText.text = $"{clipAmmo} / {reserveAmmo}";
+            if (weaponNameText) weaponNameText.text = weaponName;
+
+            // 3. Cập nhật Ngôi sao truy nã
+            for (int i = 0; i < starIcons.Length; i++)
+            {
+                if (starIcons[i] != null)
+                {
+                    starIcons[i].SetActive(i < wantedStars);
+                }
+            }
+        }
+
+        // Mở rộng tâm ngắm khi di chuyển hoặc bắn
+        public void SetCrosshairSpread(float spread)
+        {
+            if (crosshairUI)
+            {
+                crosshairUI.sizeDelta = new Vector2(spread, spread);
+            }
+        }
+    }
+}

@@ -1,0 +1,362 @@
+using UnityEngine;
+
+namespace GTAOpenWorld.Part1.Player
+{
+    public enum MovementState { Walk, Sprint, Crouch, Prone, Swimming, InAir }
+
+    [RequireComponent(typeof(CharacterController))]
+    public class FPSPlayerController : MonoBehaviour
+    {
+        [Header("Movement Speeds")]
+        public float walkSpeed = 4.5f;
+        public float sprintSpeed = 8.5f;
+        public float crouchSpeed = 2.2f;
+        public float proneSpeed = 1.0f;
+        public float swimSpeed = 3.5f;
+
+        [Header("Heights & Colliders")]
+        public float standHeight = 1.8f;
+        public float crouchHeight = 1.2f;
+        public float proneHeight = 0.5f;
+
+        [Header("Physics & Gravity")]
+        public float jumpHeight = 1.6f;
+        public float gravity = -19.62f;
+        public LayerMask waterLayer;
+
+        [Header("Current Status")]
+        public MovementState currentState = MovementState.Walk;
+        public bool isGrounded;
+        public bool isInWater;
+
+        private CharacterController controller;
+        private Vector3 velocity;
+        private Vector3 controllerCenter;
+
+        private void Awake()
+        {
+            controller = GetComponent<CharacterController>();
+        }
+
+        private void Update()
+        {
+            CheckEnvironment();
+            HandleStanceInput();
+            HandleMovement();
+        }
+
+        private void CheckEnvironment()
+        {
+            isGrounded = controller.isGrounded;
+            
+            // Kiểm tra nhân vật có đang chìm trong nước hay không
+            isInWater = Physics.CheckSphere(transform.position + Vector3.up * 0.5f, 0.4f, waterLayer);
+            
+            if (isInWater)
+            {
+                currentState = MovementState.Swimming;
+            }
+            else if (isGrounded && velocity.y < 0)
+            {
+                velocity.y = -2f; // Giữ nhân vật bám sát mặt đất
+            }
+        }
+
+        private void HandleStanceInput()
+        {
+            if (isInWater) return;
+
+            // Chuyển đổi giữa Ngồi (Crouch) và Nằm (Prone)
+            if (Input.GetKeyDown(KeyCode.C))
+            {
+                if (currentState == MovementState.Crouch) SetStance(MovementState.Walk, standHeight);
+                else SetStance(MovementState.Crouch, crouchHeight);
+            }
+            else if (Input.GetKeyDown(KeyCode.Z))
+            {
+                if (currentState == MovementState.Prone) SetStance(MovementState.Walk, standHeight);
+                else SetStance(MovementState.Prone, proneHeight);
+            }
+        }
+
+        private void SetStance(MovementState newState, float targetHeight)
+        {
+            currentState = newState;
+            controller.height = targetHeight;
+            controller.center = new Vector3(0, targetHeight / 2f, 0);
+        }
+
+        private void HandleMovement()
+        {
+            float x = Input.GetAxis("Horizontal");
+            float z = Input.GetAxis("Vertical");
+
+            // Xác định tốc độ hiện tại
+            float targetSpeed = walkSpeed;
+            if (isInWater)
+            {
+                targetSpeed = swimSpeed;
+            }
+            else
+            {
+                switch (currentState)
+                {
+                    case MovementState.Crouch: targetSpeed = crouchSpeed; break;
+                    case MovementState.Prone: targetSpeed = proneSpeed; break;
+                    default:
+                        if (Input.GetKey(KeyCode.LeftShift) && z > 0)
+                        {
+                            targetSpeed = sprintSpeed;
+                            currentState = MovementState.Sprint;
+                        }
+                        else
+                        {
+                            currentState = MovementState.Walk;
+                        }
+                        break;
+                }
+            }
+
+            Vector3 move = transform.right * x + transform.forward * z;
+            controller.Move(move * targetSpeed * Time.deltaTime);
+
+            // Xử lý Nhảy & Trọng lực
+            if (Input.GetButtonDown("Jump") && isGrounded && !isInWater && currentState != MovementState.Prone)
+            {
+                velocity.y = Mathf.Sqrt(jumpHeight * -2f * gravity);
+                currentState = MovementState.InAir;
+            }
+
+            if (isInWater)
+            {
+                // Di chuyển tự do trong nước (lặn/nổi)
+                if (Input.GetButton("Jump")) velocity.y = swimSpeed;
+                else if (Input.GetKey(KeyCode.LeftControl)) velocity.y = -swimSpeed;
+                else velocity.y = 0f;
+            }
+            else
+            {
+                velocity.y += gravity * Time.deltaTime;
+            }
+
+            controller.Move(velocity * Time.deltaTime);
+        }
+    }
+}
+using UnityEngine;
+
+namespace GTAOpenWorld.Part1.Camera
+{
+    public class FPSCameraRig : MonoBehaviour
+    {
+        [Header("Sensitivity & Limits")]
+        public float mouseSensitivity = 2.5f;
+        public float minPitch = -85f;
+        public float maxPitch = 85f;
+
+        [Header("View Bobbing")]
+        public float bobFrequency = 12f;
+        public float bobHorizontalAmplitude = 0.04f;
+        public float bobVerticalAmplitude = 0.04f;
+
+        [Header("Target References")]
+        public Transform playerBody;
+        public Transform cameraHolder;
+
+        private float xRotation = 0f;
+        private float bobTimer = 0f;
+        private Vector3 defaultCameraPos;
+
+        private void Start()
+        {
+            Cursor.lockState = CursorLockMode.Locked;
+            Cursor.visible = false;
+            defaultCameraPos = cameraHolder.localPosition;
+        }
+
+        private void Update()
+        {
+            HandleMouseLook();
+            HandleViewBobbing();
+        }
+
+        private void HandleMouseLook()
+        {
+            float mouseX = Input.GetAxis("Mouse X") * mouseSensitivity;
+            float mouseY = Input.GetAxis("Mouse Y") * mouseSensitivity;
+
+            xRotation -= mouseY;
+            xRotation = Mathf.Clamp(xRotation, minPitch, maxPitch);
+
+            cameraHolder.localRotation = Quaternion.Euler(xRotation, 0f, 0f);
+            playerBody.Rotate(Vector3.up * mouseX);
+        }
+
+        private void HandleViewBobbing()
+        {
+            float moveSpeed = new Vector3(Input.GetAxis("Horizontal"), 0, Input.GetAxis("Vertical")).magnitude;
+
+            if (moveSpeed > 0.1f)
+            {
+                bobTimer += Time.deltaTime * bobFrequency;
+                float newX = defaultCameraPos.x + Mathf.Cos(bobTimer / 2) * bobHorizontalAmplitude;
+                float newY = defaultCameraPos.y + Mathf.Sin(bobTimer) * bobVerticalAmplitude;
+                cameraHolder.localPosition = new Vector3(newX, newY, defaultCameraPos.z);
+            }
+            else
+            {
+                bobTimer = 0f;
+                cameraHolder.localPosition = Vector3.Lerp(cameraHolder.localPosition, defaultCameraPos, Time.deltaTime * 6f);
+            }
+        }
+
+        // Trigger rung camera khi nổ hoặc bắn súng nặng
+        public void ApplyCameraShake(float duration, float intensity)
+        {
+            StartCoroutine(ShakeRoutine(duration, intensity));
+        }
+
+        private System.Collections.IEnumerator ShakeRoutine(float duration, float intensity)
+        {
+            float elapsed = 0f;
+            while (elapsed < duration)
+            {
+                float x = Random.Range(-1f, 1f) * intensity;
+                float y = Random.Range(-1f, 1f) * intensity;
+                cameraHolder.localPosition += new Vector3(x, y, 0);
+                elapsed += Time.deltaTime;
+                yield return null;
+            }
+        }
+    }
+}using UnityEngine;
+
+namespace GTAOpenWorld.Part1.InputSystem
+{
+    public class CrossPlatformInputManager : MonoBehaviour
+    {
+        public enum InputMode { PC_KeyboardMouse, Gamepad, MobileTouch }
+        public InputMode currentInputMode = InputMode.PC_KeyboardMouse;
+
+        [Header("Mobile Controls UI Reference")]
+        public GameObject mobileCanvasGroup;
+
+        private static CrossPlatformInputManager instance;
+        public static CrossPlatformInputManager Instance => instance;
+
+        private void Awake()
+        {
+            if (instance == null) instance = this;
+            else Destroy(gameObject);
+
+            DetectPlatform();
+        }
+
+        private void DetectPlatform()
+        {
+#if UNITY_ANDROID || UNITY_IOS
+            currentInputMode = InputMode.MobileTouch;
+            if (mobileCanvasGroup) mobileCanvasGroup.SetActive(true);
+#else
+            currentInputMode = InputMode.PC_KeyboardMouse;
+            if (mobileCanvasGroup) mobileCanvasGroup.SetActive(false);
+#endif
+        }
+
+        public Vector2 GetMovementAxis()
+        {
+            if (currentInputMode == InputMode.MobileTouch)
+            {
+                // Lấy dữ liệu từ Virtual Joystick
+                return VirtualJoystick.InputVector;
+            }
+            return new Vector2(Input.GetAxis("Horizontal"), Input.GetAxis("Vertical"));
+        }
+
+        public bool GetActionButtonDown(string actionName)
+        {
+            switch (actionName)
+            {
+                case "Jump": return Input.GetButtonDown("Jump");
+                case "Fire": return Input.GetButtonDown("Fire1");
+                case "Interact": return Input.GetKeyDown(KeyCode.E);
+                default: return false;
+            }
+        }
+    }
+
+    // Helper class giả định cho Virtual Joystick trên Mobile UI
+    public static class VirtualJoystick
+    {
+        public static Vector2 InputVector = Vector2.zero;
+    }
+}
+using UnityEngine;
+using UnityEngine.UI;
+
+namespace GTAOpenWorld.Part1.UI
+{
+    public class GameMenuManager : MonoBehaviour
+    {
+        [Header("UI Panels")]
+        public GameObject pauseMenuPanel;
+        public GameObject settingsPanel;
+
+        [Header("Audio Settings")]
+        public AudioSource masterAudioSource;
+
+        public bool isPaused = false;
+
+        private void Update()
+        {
+            if (Input.GetKeyDown(KeyCode.Escape))
+            {
+                if (isPaused) ResumeGame();
+                else PauseGame();
+            }
+        }
+
+        public void PauseGame()
+        {
+            isPaused = true;
+            Time.timeScale = 0f; // Dừng thời gian game
+            pauseMenuPanel.SetActive(true);
+            Cursor.lockState = CursorLockMode.None;
+            Cursor.visible = true;
+        }
+
+        public void ResumeGame()
+        {
+            isPaused = false;
+            Time.timeScale = 1f; // Chạy lại game
+            pauseMenuPanel.SetActive(false);
+            settingsPanel.SetActive(false);
+            Cursor.lockState = CursorLockMode.Locked;
+            Cursor.visible = false;
+        }
+
+        // Đổi chất lượng đồ họa: 0 (Low), 1 (Medium), 2 (High), 3 (Ultra 4K)
+        public void SetGraphicsQuality(int qualityIndex)
+        {
+            QualitySettings.SetQualityLevel(qualityIndex, true);
+            Debug.Log($"Graphics level updated to index: {qualityIndex}");
+        }
+
+        // Đổi độ phân giải màn hình
+        public void SetResolution(int width, int height, bool isFullscreen)
+        {
+            Screen.SetResolution(width, height, isFullscreen);
+        }
+
+        // Chỉnh âm lượng tổng
+        public void SetMasterVolume(float volume)
+        {
+            AudioListener.volume = Mathf.Clamp01(volume);
+        }
+
+        public void QuitGame()
+        {
+            Application.Quit();
+        }
+    }
+}

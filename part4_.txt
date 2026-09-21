@@ -1,0 +1,308 @@
+using System.Collections.Generic;
+using UnityEngine;
+
+namespace GTAOpenWorld.Part4.World
+{
+    public class WorldChunkManager : MonoBehaviour
+    {
+        [Header("Chunk Settings")]
+        public float chunkSize = 250f; // Kích thước mỗi ô chunk (250m x 250m)
+        public int renderDistanceInChunks = 2; // Bán kính tải xung quanh người chơi
+        public Transform playerTransform;
+
+        [Header("Chunk Prefabs Grid Data")]
+        public List<GameObject> registeredChunks = new List<GameObject>();
+
+        private Dictionary<Vector2Int, GameObject> activeChunks = new Dictionary<Vector2Int, GameObject>();
+        private Vector2Int currentChunkCoord;
+
+        private void Update()
+        {
+            if (playerTransform == null) return;
+
+            // Tính tọa độ ô chunk hiện tại của người chơi
+            Vector2Int newChunkCoord = new Vector2Int(
+                Mathf.FloorToInt(playerTransform.position.x / chunkSize),
+                Mathf.FloorToInt(playerTransform.position.z / chunkSize)
+            );
+
+            // Cập nhật các ô xung quanh khi người chơi di chuyển sang ô mới
+            if (newChunkCoord != currentChunkCoord)
+            {
+                currentChunkCoord = newChunkCoord;
+                UpdateChunksVisibility();
+            }
+        }
+
+        private void UpdateChunksVisibility()
+        {
+            HashSet<Vector2Int> visibleCoords = new HashSet<Vector2Int>();
+
+            // Quét danh sách các tọa độ ô chunk nằm trong bán kính render
+            for (int x = -renderDistanceInChunks; x <= renderDistanceInChunks; x++)
+            {
+                for (int z = -renderDistanceInChunks; z <= renderDistanceInChunks; z++)
+                {
+                    Vector2Int coord = new Vector2Int(currentChunkCoord.x + x, currentChunkCoord.y + z);
+                    visibleCoords.Add(coord);
+
+                    if (!activeChunks.ContainsKey(coord))
+                    {
+                        // Kích hoạt hoặc khởi tạo ô chunk mới
+                        GameObject chunkObj = FindChunkAtCoord(coord);
+                        if (chunkObj != null)
+                        {
+                            chunkObj.SetActive(true);
+                            activeChunks.Add(coord, chunkObj);
+                        }
+                    }
+                }
+            }
+
+            // Tắt các ô chunk nằm ngoài bán kính quan sát
+            List<Vector2Int> coordsToRemove = new List<Vector2Int>();
+            foreach (var kvp in activeChunks)
+            {
+                if (!visibleCoords.Contains(kvp.Key))
+                {
+                    kvp.Value.SetActive(false);
+                    coordsToRemove.Add(kvp.Key);
+                }
+            }
+
+            foreach (var coord in coordsToRemove)
+            {
+                activeChunks.Remove(coord);
+            }
+        }
+
+        private GameObject FindChunkAtCoord(Vector2Int coord)
+        {
+            // Tìm đối tượng chunk tương ứng trong cơ sở dữ liệu map
+            string chunkName = $"Chunk_{coord.x}_{coord.y}";
+            foreach (var obj in registeredChunks)
+            {
+                if (obj.name == chunkName) return obj;
+            }
+            return null;
+        }
+    }
+}
+using UnityEngine;
+
+namespace GTAOpenWorld.Part4.Environment
+{
+    public class DayNightWeatherSystem : MonoBehaviour
+    {
+        [Header("Time System")]
+        [Range(0, 24)] public float timeOfDay = 12.0f; // 12h Trưa
+        public float dayDurationInMinutes = 20.0f;     // 1 ngày = 20 phút thực tế
+        public Light sunDirectionalLight;
+        public Light moonDirectionalLight;
+
+        [Header("Gradient Colors")]
+        public Gradient sunColorGradient;
+        public Gradient skyColorGradient;
+
+        [Header("Weather Particle & Audio")]
+        public ParticleSystem rainParticleSystem;
+        public AudioSource rainAudioSource;
+        public Material roadWetnessMaterial;
+
+        [Header("Weather State")]
+        public bool isRaining = false;
+        private float targetWetness = 0f;
+        private float currentWetness = 0f;
+
+        private void Update()
+        {
+            UpdateTimeOfDay();
+            UpdateLighting();
+            UpdateWeatherEffects();
+        }
+
+        private void UpdateTimeOfDay()
+        {
+            timeOfDay += (Time.deltaTime / (dayDurationInMinutes * 60f)) * 24f;
+            if (timeOfDay >= 24f) timeOfDay = 0f;
+        }
+
+        private void UpdateLighting()
+        {
+            float normalizedTime = timeOfDay / 24f;
+            float sunAngle = (normalizedTime * 360f) - 90f;
+
+            // Xoay hướng mặt trời và mặt trăng
+            if (sunDirectionalLight)
+            {
+                sunDirectionalLight.transform.rotation = Quaternion.Euler(sunAngle, 170f, 0f);
+                sunDirectionalLight.color = sunColorGradient.Evaluate(normalizedTime);
+                sunDirectionalLight.intensity = Mathf.Clamp01(Mathf.Sin(normalizedTime * Mathf.PI));
+            }
+
+            if (moonDirectionalLight)
+            {
+                moonDirectionalLight.transform.rotation = Quaternion.Euler(sunAngle + 180f, 170f, 0f);
+                moonDirectionalLight.intensity = (timeOfDay < 6f || timeOfDay > 18f) ? 0.3f : 0f;
+            }
+
+            RenderSettings.skybox.SetColor("_SkyTint", skyColorGradient.Evaluate(normalizedTime));
+        }
+
+        public void SetWeatherRain(bool enableRain)
+        {
+            isRaining = enableRain;
+            targetWetness = isRaining ? 1.0f : 0.0f;
+
+            if (isRaining)
+            {
+                if (rainParticleSystem) rainParticleSystem.Play();
+                if (rainAudioSource) rainAudioSource.Play();
+            }
+            else
+            {
+                if (rainParticleSystem) rainParticleSystem.Stop();
+                if (rainAudioSource) rainAudioSource.Stop();
+            }
+        }
+
+        private void UpdateWeatherEffects()
+        {
+            // Tăng/giảm độ bóng ướt trên chất liệu mặt đường theo thời gian
+            currentWetness = Mathf.MoveTowards(currentWetness, targetWetness, Time.deltaTime * 0.1f);
+            if (roadWetnessMaterial)
+            {
+                roadWetnessMaterial.SetFloat("_Glossiness", Mathf.Lerp(0.4f, 0.95f, currentWetness));
+                roadWetnessMaterial.SetFloat("_Metallic", Mathf.Lerp(0.1f, 0.8f, currentWetness));
+            }
+        }
+    }
+}
+using UnityEngine;
+using UnityEngine.AI;
+
+namespace GTAOpenWorld.Part4.AI
+{
+    public enum EcosystemState { Idle, Wander, Flee, Attack }
+
+    [RequireComponent(typeof(NavMeshAgent))]
+    public class NPCAnimalEcosystem : MonoBehaviour
+    {
+        public enum EntityType { Pedestrian, Dog, WildAnimal }
+        public EntityType entityType = EntityType.Pedestrian;
+        public EcosystemState currentState = EcosystemState.Wander;
+
+        [Header("Movement & Detection")]
+        public float wanderRadius = 15f;
+        public float fleeDistance = 25f;
+        public float dangerDetectionRadius = 12f;
+
+        private NavMeshAgent agent;
+        private Vector3 dangerLocation;
+
+        private void Start()
+        {
+            agent = GetComponent<NavMeshAgent>();
+            SetRandomWanderDestination();
+        }
+
+        private void Update()
+        {
+            switch (currentState)
+            {
+                case EcosystemState.Wander:
+                    if (!agent.pathPending && agent.remainingDistance < 0.5f)
+                    {
+                        SetRandomWanderDestination();
+                    }
+                    break;
+
+                case EcosystemState.Flee:
+                    agent.speed = 6.5f; // Chạy nhanh hoảng loạn
+                    Vector3 runAwayDirection = (transform.position - dangerLocation).normalized;
+                    Vector3 destination = transform.position + runAwayDirection * fleeDistance;
+
+                    if (NavMesh.SamplePosition(destination, out NavMeshHit hit, fleeDistance, NavMesh.AllAreas))
+                    {
+                        agent.SetDestination(hit.position);
+                    }
+
+                    if (Vector3.Distance(transform.position, dangerLocation) > fleeDistance * 1.5f)
+                    {
+                        currentState = EcosystemState.Wander;
+                        agent.speed = 2.0f; // Trở lại tốc độ đi bộ
+                    }
+                    break;
+            }
+        }
+
+        // Kích hoạt hoảng loạn khi nghe súng nổ hoặc sự cố giao thông
+        public void OnDangerDetected(Vector3 sourcePosition)
+        {
+            dangerLocation = sourcePosition;
+            currentState = EcosystemState.Flee;
+        }
+
+        private void SetRandomWanderDestination()
+        {
+            Vector3 randomDirection = Random.insideUnitSphere * wanderRadius + transform.position;
+            if (NavMesh.SamplePosition(randomDirection, out NavMeshHit hit, wanderRadius, NavMesh.AllAreas))
+            {
+                agent.SetDestination(hit.position);
+            }
+        }
+    }
+}
+using UnityEngine;
+using UnityEngine.Rendering;
+
+namespace GTAOpenWorld.Part4.Graphics
+{
+    public class GraphicsLightingSettings : MonoBehaviour
+    {
+        [Header("Lights & Probes")]
+        public Light mainSunLight;
+        public ReflectionProbe mainReflectionProbe;
+
+        [Header("Shadow Settings")]
+        public bool enableSoftShadows = true;
+        public float shadowDistancePC = 180f;
+        public float shadowDistanceMobile = 45f;
+
+        // Cập nhật toàn bộ tham số đồ họa thời gian thực
+        public void ApplyGraphicsConfiguration(bool isPCUltra, float resolutionScale)
+        {
+            // Adjust Render Scale
+            ScalableBufferManager.ResizeBuffers(resolutionScale, resolutionScale);
+
+            if (isPCUltra)
+            {
+                // Cấu hình đồ họa cao cấp PC 4K
+                QualitySettings.shadows = ShadowQuality.All;
+                QualitySettings.shadowResolution = ShadowResolution.VeryHigh;
+                QualitySettings.shadowDistance = shadowDistancePC;
+                QualitySettings.shadowCascades = 4; // 4 lớp bóng đổ chi tiết
+
+                if (mainSunLight) mainSunLight.shadows = LightShadows.Soft;
+                RenderSettings.fog = true;
+                RenderSettings.fogDensity = 0.008f;
+            }
+            else
+            {
+                // Cấu hình tối ưu cho thiết bị cấu hình thấp / Mobile
+                QualitySettings.shadows = ShadowQuality.HardOnly;
+                QualitySettings.shadowResolution = ShadowResolution.Low;
+                QualitySettings.shadowDistance = shadowDistanceMobile;
+                QualitySettings.shadowCascades = 2;
+
+                if (mainSunLight) mainSunLight.shadows = LightShadows.Hard;
+                RenderSettings.fog = false;
+            }
+
+            if (mainReflectionProbe)
+            {
+                mainReflectionProbe.RenderProbe();
+            }
+        }
+    }
+}

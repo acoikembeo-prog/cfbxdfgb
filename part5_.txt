@@ -1,0 +1,317 @@
+using System.Collections;
+using System.Collections.Generic;
+using UnityEngine;
+using UnityEngine.UI;
+
+namespace GTAOpenWorld.Part5.Smartphone
+{
+    public class SmartphoneController : MonoBehaviour
+    {
+        [Header("UI Panels")]
+        public GameObject phoneCanvasGroup;
+        public RectTransform phoneTransform; // Dùng để trượt điện thoại từ dưới màn hình lên
+        public Text timeDisplay;
+
+        [Header("App Views")]
+        public GameObject homeScreenApp;
+        public GameObject contactsApp;
+        public GameObject bankApp;
+
+        [Header("Phone Audio")]
+        public AudioSource phoneAudioSource;
+        public AudioClip ringtoneSound;
+        public AudioClip notificationSound;
+
+        public bool isPhoneOpen = false;
+        private Vector3 hiddenPosition = new Vector3(0, -700f, 0);
+        private Vector3 visiblePosition = new Vector3(0, -150f, 0);
+
+        private void Update()
+        {
+            // Bấm phím Phím Mũi Tên Lên hoặc T để bật/tắt Điện thoại
+            if (Input.GetKeyDown(KeyCode.UpArrow) || Input.GetKeyDown(KeyCode.T))
+            {
+                ToggleSmartphone();
+            }
+
+            if (isPhoneOpen)
+            {
+                // Cập nhật đồng hồ trên điện thoại
+                if (timeDisplay)
+                    timeDisplay.text = System.DateTime.Now.ToString("HH:mm");
+            }
+        }
+
+        public void ToggleSmartphone()
+        {
+            isPhoneOpen = !isPhoneOpen;
+            StopAllCoroutines();
+            StartCoroutine(AnimatePhone(isPhoneOpen ? visiblePosition : hiddenPosition));
+
+            if (isPhoneOpen)
+            {
+                OpenApp(homeScreenApp);
+            }
+        }
+
+        private IEnumerator AnimatePhone(Vector3 targetPos)
+        {
+            while (Vector3.Distance(phoneTransform.anchoredPosition, targetPos) > 0.1f)
+            {
+                phoneTransform.anchoredPosition = Vector3.Lerp(phoneTransform.anchoredPosition, targetPos, Time.unscaledDeltaTime * 12f);
+                yield return null;
+            }
+            phoneTransform.anchoredPosition = targetPos;
+        }
+
+        public void OpenApp(GameObject appPanel)
+        {
+            homeScreenApp.SetActive(false);
+            contactsApp.SetActive(false);
+            bankApp.SetActive(false);
+
+            if (appPanel != null) appPanel.SetActive(true);
+        }
+
+        // Gọi Dịch vụ Taxi gọi xe tới vị trí người chơi
+        public void CallTaxiService()
+        {
+            Debug.Log("Đã gọi Taxi! Taxi đang trên đường tới vị trí của bạn.");
+            if (phoneAudioSource && notificationSound) 
+                phoneAudioSource.PlayOneShot(notificationSound);
+            
+            ToggleSmartphone();
+            // Trigger gọi Vehicle AI Taxi tới vị trí Player
+        }
+    }
+}
+using System.Collections.Generic;
+using UnityEngine;
+using UnityEngine.Events;
+
+namespace GTAOpenWorld.Part5.Quests
+{
+    [System.Serializable]
+    public class MissionObjective
+    {
+        public string objectiveTitle = "Đi tới điểm hẹn";
+        public Vector3 targetPosition;
+        public float triggerRadius = 4.0f;
+        public bool isCompleted = false;
+    }
+
+    public class MissionManager : MonoBehaviour
+    {
+        [Header("Active Mission Info")]
+        public string currentMissionTitle = "Phi Vụ Ngân Hàng";
+        public List<MissionObjective> objectives = new List<MissionObjective>();
+        public int rewardCash = 15000;
+        public int rewardXP = 2500;
+
+        [Header("Current Progress")]
+        public int currentObjectiveIndex = 0;
+        public bool isMissionActive = false;
+        public Transform playerTransform;
+
+        [Header("Events")]
+        public UnityEvent onMissionStarted;
+        public UnityEvent onMissionCompleted;
+        public UnityEvent onMissionFailed;
+
+        private void Update()
+        {
+            if (!isMissionActive || currentObjectiveIndex >= objectives.Count) return;
+
+            MissionObjective activeObj = objectives[currentObjectiveIndex];
+
+            // Kiểm tra người chơi đã đến vị trí Checkpoint chưa
+            float distance = Vector3.Distance(playerTransform.position, activeObj.targetPosition);
+            if (distance <= activeObj.triggerRadius)
+            {
+                CompleteCurrentObjective();
+            }
+        }
+
+        public void StartMission()
+        {
+            isMissionActive = true;
+            currentObjectiveIndex = 0;
+            onMissionStarted?.Invoke();
+            Debug.Log($"[Nhiệm vụ] Bắt đầu: {currentMissionTitle}");
+        }
+
+        private void CompleteCurrentObjective()
+        {
+            objectives[currentObjectiveIndex].isCompleted = true;
+            Debug.Log($"[Mục tiêu Hoàn Thành]: {objectives[currentObjectiveIndex].objectiveTitle}");
+
+            currentObjectiveIndex++;
+
+            if (currentObjectiveIndex >= objectives.Count)
+            {
+                FinishMissionSuccess();
+            }
+        }
+
+        private void FinishMissionSuccess()
+        {
+            isMissionActive = false;
+            onMissionCompleted?.Invoke();
+
+            // Cộng tiền mặt và XP cho người chơi
+            Economy.EconomyPropertyManager.Instance.AddCash(rewardCash);
+            Debug.Log($"[Nhiệm vụ Hoàn Thành] Bạn nhận được ${rewardCash} và {rewardXP} XP!");
+        }
+
+        public void FailMission(string failReason)
+        {
+            isMissionActive = false;
+            onMissionFailed?.Invoke();
+            Debug.Log($"[Nhiệm vụ Thất Bại]: {failReason}. Bấm R để thử lại từ Checkpoint.");
+        }
+    }
+}using System.Collections.Generic;
+using UnityEngine;
+
+namespace GTAOpenWorld.Part5.Economy
+{
+    [System.Serializable]
+    public class PropertyData
+    {
+        public string propertyID = "SAFEHOUSE_01";
+        public string propertyName = "Căn hộ Penthouse Luxury";
+        public int purchasePrice = 500000;
+        public bool isOwned = false;
+        public Vector3 spawnPosition;
+    }
+
+    public class EconomyPropertyManager : MonoBehaviour
+    {
+        public static EconomyPropertyManager Instance;
+
+        [Header("Player Finances")]
+        public int cashBalance = 2500;
+        public int bankBalance = 150000;
+
+        [Header("Properties Database")]
+        public List<PropertyData> propertiesList = new List<PropertyData>();
+
+        private void Awake()
+        {
+            if (Instance == null) Instance = this;
+            else Destroy(gameObject);
+        }
+
+        public void AddCash(int amount)
+        {
+            cashBalance += amount;
+        }
+
+        public bool DeductMoney(int amount, bool preferBank)
+        {
+            if (preferBank && bankBalance >= amount)
+            {
+                bankBalance -= amount;
+                return true;
+            }
+            else if (cashBalance >= amount)
+            {
+                cashBalance -= amount;
+                return true;
+            }
+            return false; // Không đủ tiền
+        }
+
+        // Mua Bất động sản / Safehouse
+        public bool BuyProperty(string propertyID)
+        {
+            PropertyData property = propertiesList.Find(p => p.propertyID == propertyID);
+
+            if (property != null && !property.isOwned)
+            {
+                if (DeductMoney(property.purchasePrice, true))
+                {
+                    property.isOwned = true;
+                    Debug.Log($"Chúc mừng! Bạn đã sở hữu bất động sản: {property.propertyName}");
+                    return true;
+                }
+            }
+            return false;
+        }
+    }
+}using System;
+using System.IO;
+using System.Text;
+using UnityEngine;
+
+namespace GTAOpenWorld.Part5.SaveSystem
+{
+    [Serializable]
+    public class SaveDataStructure
+    {
+        public float[] position = new float[3];
+        public float[] rotation = new float[3];
+        public int cash;
+        public int bank;
+        public int wantedStars;
+        public string currentActiveMissionID;
+        public string[] ownedPropertyIDs;
+    }
+
+    public class SaveSystemManager : MonoBehaviour
+    {
+        private string saveFileName = "gta_world_save.dat";
+        private string secretEncryptionKey = "GTA_SECRET_KEY_2026"; // Khóa mã hóa
+
+        public void SaveGame(Vector3 playerPos, Quaternion playerRot, int cash, int bank, int wantedLevel, string missionID, string[] ownedProperties)
+        {
+            SaveDataStructure data = new SaveDataStructure
+            {
+                position = new float[] { playerPos.x, playerPos.y, playerPos.z },
+                rotation = new float[] { playerRot.eulerAngles.x, playerRot.eulerAngles.y, playerRot.eulerAngles.z },
+                cash = cash,
+                bank = bank,
+                wantedStars = wantedLevel,
+                currentActiveMissionID = missionID,
+                ownedPropertyIDs = ownedProperties
+            };
+
+            string rawJson = JsonUtility.ToJson(data, true);
+            string encryptedData = EncryptDecrypt(rawJson, secretEncryptionKey);
+
+            string filePath = Path.Combine(Application.persistentDataPath, saveFileName);
+            File.WriteAllText(filePath, encryptedData);
+
+            Debug.Log($"[Save System] Đã lưu dữ liệu mã hóa thành công tại: {filePath}");
+        }
+
+        public SaveDataStructure LoadGame()
+        {
+            string filePath = Path.Combine(Application.persistentDataPath, saveFileName);
+
+            if (File.Exists(filePath))
+            {
+                string encryptedData = File.ReadAllText(filePath);
+                string decryptedJson = EncryptDecrypt(encryptedData, secretEncryptionKey);
+
+                SaveDataStructure loadedData = JsonUtility.FromJson<SaveDataStructure>(decryptedJson);
+                Debug.Log("[Save System] Tải dữ liệu lưu game thành công!");
+                return loadedData;
+            }
+
+            Debug.LogWarning("[Save System] Không tìm thấy file lưu game!");
+            return null;
+        }
+
+        // Mã hóa XOR đơn giản cho file Save
+        private string EncryptDecrypt(string inputData, string key)
+        {
+            StringBuilder result = new StringBuilder();
+            for (int i = 0; i < inputData.Length; i++)
+            {
+                result.Append((char)(inputData[i] ^ key[i % key.Length]));
+            }
+            return result.ToString();
+        }
+    }
+}

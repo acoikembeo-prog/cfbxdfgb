@@ -1,0 +1,274 @@
+using UnityEngine;
+using UnityEngine.UI;
+
+namespace GTAOpenWorld.Part3.Vehicles
+{
+    public class VehiclePhysicsController : MonoBehaviour
+    {
+        [Header("Engine & Performance")]
+        public float maxMotorTorque = 2200f; // Lực kéo động cơ
+        public float maxBrakeTorque = 4000f; // Lực phanh
+        public float maxSteerAngle = 32f;    // Góc rẽ tối đa
+        public float handbrakeFrictionModifier = 0.3f; // Hệ số ma sát khi kéo phanh tay (Drift)
+
+        [Header("Wheel Colliders")]
+        public WheelCollider wheelFL;
+        public WheelCollider wheelFR;
+        public WheelCollider wheelRL;
+        public WheelCollider wheelRR;
+
+        [Header("Cockpit & Camera")]
+        public Transform cockpitCameraPosition;
+        public Transform steeringWheelMesh;
+        public Text speedometerText; // Đồng hồ KM/H
+
+        [Header("Vehicle State")]
+        public bool isEngineOn = false;
+        public GameObject driverPlayerRef;
+
+        private float currentSpeedKMH;
+        private WheelFrictionCurve defaultFrictionRL;
+        private WheelFrictionCurve defaultFrictionRR;
+
+        private void Start()
+        {
+            // Lưu độ ma sát lốp ban đầu để khôi phục sau khi Drift
+            defaultFrictionRL = wheelRL.sidewaysFriction;
+            defaultFrictionRR = wheelRR.sidewaysFriction;
+        }
+
+        private void Update()
+        {
+            if (!isEngineOn) return;
+
+            HandleInput();
+            UpdateDashboardUI();
+            CheckExitVehicleInput();
+        }
+
+        private void HandleInput()
+        {
+            float accel = Input.GetAxis("Vertical");
+            float steer = Input.GetAxis("Horizontal");
+            bool isHandbraking = Input.GetKey(KeyCode.Space);
+
+            // 1. Áp dụng góc rẽ bánh trước & Vô-lăng buồng lái
+            float steerAngle = steer * maxSteerAngle;
+            wheelFL.steerAngle = steerAngle;
+            wheelFR.steerAngle = steerAngle;
+
+            if (steeringWheelMesh != null)
+            {
+                steeringWheelMesh.localRotation = Quaternion.Euler(0f, 0f, -steer * 180f);
+            }
+
+            // 2. Truyền động mô-men xoắn vào bánh sau (RWD)
+            float motorTorque = accel * maxMotorTorque;
+            wheelRL.motorTorque = motorTorque;
+            wheelRR.motorTorque = motorTorque;
+
+            // 3. Xử lý Phanh tay & Drift
+            if (isHandbraking)
+            {
+                wheelRL.brakeTorque = maxBrakeTorque;
+                wheelRR.brakeTorque = maxBrakeTorque;
+                ApplyDriftFriction(handbrakeFrictionModifier);
+            }
+            else
+            {
+                wheelRL.brakeTorque = 0f;
+                wheelRR.brakeTorque = 0f;
+                ApplyDriftFriction(1.0f); // Trở lại ma sát bình thường
+            }
+        }
+
+        private void ApplyDriftFriction(float modifier)
+        {
+            WheelFrictionCurve fRL = defaultFrictionRL;
+            WheelFrictionCurve fRR = defaultFrictionRR;
+
+            fRL.stiffness = defaultFrictionRL.stiffness * modifier;
+            fRR.stiffness = defaultFrictionRR.stiffness * modifier;
+
+            wheelRL.sidewaysFriction = fRL;
+            wheelRR.sidewaysFriction = fRR;
+        }
+
+        private void UpdateDashboardUI()
+        {
+            // Tính tốc độ hiện tại theo KM/H
+            currentSpeedKMH = GetComponent<Rigidbody>().velocity.magnitude * 3.6f;
+            if (speedometerText)
+            {
+                speedometerText.text = $"{Mathf.RoundToInt(currentSpeedKMH)} KM/H";
+            }
+        }
+
+        public void EnterVehicle(GameObject player)
+        {
+            driverPlayerRef = player;
+            driverPlayerRef.SetActive(false); // Ẩn nhân vật FPS khi vào xe
+            isEngineOn = true;
+
+            // Chuyển Camera chính vào vị trí Cockpit
+            Camera.main.transform.SetParent(cockpitCameraPosition);
+            Camera.main.transform.localPosition = Vector3.zero;
+            Camera.main.transform.localRotation = Quaternion.identity;
+        }
+
+        private void CheckExitVehicleInput()
+        {
+            if (Input.GetKeyDown(KeyCode.F)) // Bấm F để rời xe
+            {
+                isEngineOn = false;
+                driverPlayerRef.transform.position = transform.position + transform.right * -2.0f; // Bước ra bên trái xe
+                driverPlayerRef.SetActive(true);
+
+                Camera.main.transform.SetParent(driverPlayerRef.transform);
+                enabled = false;
+            }
+        }
+    }
+}
+using System.Collections.Generic;
+using UnityEngine;
+
+namespace GTAOpenWorld.Part3.Traffic
+{
+    public class TrafficAIController : MonoBehaviour
+    {
+        [Header("Pathfinding")]
+        public List<Transform> waypoints = new List<Transform>();
+        public float cruiseSpeed = 40f; // KM/H
+        public float safeDistance = 6f;
+        public LayerMask obstacleMask;
+
+        private int currentTargetIndex = 0;
+        private Rigidbody rb;
+        private bool isBlockedByRedLight = false;
+
+        private void Start()
+        {
+            rb = GetComponent<Rigidbody>();
+        }
+
+        private void Update()
+        {
+            if (waypoints.Count == 0) return;
+
+            if (CheckObstaclesAhead() || isBlockedByRedLight)
+            {
+                StopVehicle();
+            }
+            else
+            {
+                DriveTowardsWaypoint();
+            }
+        }
+
+        private bool CheckObstaclesAhead()
+        {
+            // Chiếu Raycast phía trước xe để phát hiện người đi bộ hoặc xe khác
+            Ray ray = new Ray(transform.position + Vector3.up * 0.8f, transform.forward);
+            if (Physics.Raycast(ray, out RaycastHit hit, safeDistance, obstacleMask))
+            {
+                return true; // Dừng xe nếu phát hiện vật cản
+            }
+            return false;
+        }
+
+        private void DriveTowardsWaypoint()
+        {
+            Transform targetNode = waypoints[currentTargetIndex];
+            Vector3 direction = (targetNode.position - transform.position).normalized;
+            direction.y = 0; // Giữ hướng di chuyển trên mặt phẳng x-z
+
+            // Xoay xe theo hướng Waypoint
+            Quaternion targetRot = Quaternion.LookRotation(direction);
+            transform.rotation = Quaternion.Slerp(transform.rotation, targetRot, Time.deltaTime * 3.5f);
+
+            // Di chuyển
+            float targetSpeedMS = cruiseSpeed / 3.6f;
+            rb.velocity = transform.forward * targetSpeedMS;
+
+            // Chuyển Waypoint tiếp theo khi cách nút hiện tại dưới 3 mét
+            if (Vector3.Distance(transform.position, targetNode.position) < 3.0f)
+            {
+                currentTargetIndex = (currentTargetIndex + 1) % waypoints.Count;
+            }
+        }
+
+        private void StopVehicle()
+        {
+            rb.velocity = Vector3.Lerp(rb.velocity, Vector3.zero, Time.deltaTime * 4f);
+        }
+
+        // Tín hiệu từ Quản lý Đèn Giao thông (Traffic Light Manager)
+        public void SetRedLightStatus(bool hasRedLight)
+        {
+            isBlockedByRedLight = hasRedLight;
+        }
+    }
+}
+using UnityEngine;
+
+namespace GTAOpenWorld.Part3.Garage
+{
+    public class VehicleTuningManager : MonoBehaviour
+    {
+        [Header("Target Vehicle")]
+        public Vehicles.VehiclePhysicsController activeVehicle;
+
+        [Header("Color Settings")]
+        public MeshRenderer vehicleBodyRenderer;
+        public int colorMaterialIndex = 0;
+
+        // Đổi màu sơn xe
+        public void ApplyCustomPaintColor(Color newColor)
+        {
+            if (vehicleBodyRenderer)
+            {
+                Material[] materials = vehicleBodyRenderer.materials;
+                materials[colorMaterialIndex].color = newColor;
+                // Giữ độ bóng Metallic của sơn xe
+                materials[colorMaterialIndex].SetFloat("_Metallic", 0.85f);
+                materials[colorMaterialIndex].SetFloat("_Glossiness", 0.90f);
+            }
+        }
+
+        // Nâng cấp Động cơ Stage 1/2/3
+        public bool UpgradeEngineStage(int stageLevel, int upgradeCost)
+        {
+            if (activeVehicle == null) return false;
+
+            // Giả định trừ tiền tài khoản người chơi thành công
+            float torqueMultiplier = 1.0f + (stageLevel * 0.15f); // Mỗi Stage tăng 15% lực kéo
+            activeVehicle.maxMotorTorque *= torqueMultiplier;
+
+            Debug.Log($"Đã nâng cấp Động cơ Stage {stageLevel}! Lực kéo mới: {activeVehicle.maxMotorTorque}");
+            return true;
+        }
+
+        // Nâng cấp Hệ thống Phanh (Brakes)
+        public void UpgradeBrakes(float newBrakeTorque)
+        {
+            if (activeVehicle)
+            {
+                activeVehicle.maxBrakeTorque = newBrakeTorque;
+            }
+        }
+
+        // Bán xe hiện tại lấy tiền mặt
+        public int SellCurrentVehicle(int baseValue)
+        {
+            if (activeVehicle != null)
+            {
+                Destroy(activeVehicle.gameObject);
+                activeVehicle = null;
+                Debug.Log($"Đã bán xe thành công! Nhận được: ${baseValue}");
+                return baseValue;
+            }
+            return 0;
+        }
+    }
+}
